@@ -7,52 +7,48 @@
 #include "Poco/Net/WebSocket.h"
 #include "Poco/Net/ServerSocket.h"
 #include "Poco/Buffer.h"
+#include "Poco/File.h"
+#include "Poco/FileStream.h"
+#include "Poco/LineEndingConverter.h"
+#include "Poco/JSON/Parser.h"
+#include "Poco/Dynamic/Var.h"
+#include "Poco/URI.h"
+#include "Poco/Path.h"
 
+#include <exception>
+#include <sstream>
 #include <iostream>
 
 class RootHandler: public Poco::Net::HTTPRequestHandler
 {
 public:
+    RootHandler(std::string staticHostLocation) {
+        staticHost = staticHostLocation;
+    }
     void handleRequest(Poco::Net::HTTPServerRequest& request, Poco::Net::HTTPServerResponse& response)
     {
-        response.setChunkedTransferEncoding(true);
-        response.setContentType("text/html");
-
-        std::ostream& ostr = response.send();
-
-        ostr << "<html><head><title>HTTP Server powered by POCO C++ Libraries</title>";
-        ostr << "<script>";
-        ostr << "function WebSocketTest()";
-		ostr << "{";
-		ostr << "  if (\"WebSocket\" in window)";
-		ostr << "  {";
-		ostr << "    var ws = new WebSocket(\"ws://" << request.serverAddress().toString() << "/ws\");";
-		ostr << "    ws.onopen = function()";
-		ostr << "      {";
-		ostr << "        ws.send(\"Hello, world!\");";
-		ostr << "      };";
-		ostr << "    ws.onmessage = function(evt)";
-		ostr << "      { ";
-		ostr << "        var msg = evt.data;";
-		ostr << "        alert(\"Message received: \" + msg);";
-		ostr << "        ws.close();";
-		ostr << "      };";
-		ostr << "    ws.onclose = function()";
-		ostr << "      { ";
-		ostr << "        alert(\"WebSocket closed.\");";
-		ostr << "      };";
-		ostr << "  }";
-		ostr << "  else";
-		ostr << "  {";
-		ostr << "     alert(\"This browser does not support WebSockets.\");";
-		ostr << "  }";
-		ostr << "}";
-        ostr << "</script>";
-        ostr << "</head>";
-        ostr << "<body>";
-        ostr << "<h1>POCO server up and running!</h1>";
-        ostr << "</body></html>";
+        Poco::URI uri(request.getURI());
+        std::cout << uri.getPath() << std::endl;
+        Poco::Path path(staticHost,  (std::string("/").compare(uri.getPath()) == 0) ? std::string("/index.html") : uri.getPath());
+        Poco::File content(path);
+        
+        if( content.exists() && content.isFile() && content.canRead() ) {
+            response.setChunkedTransferEncoding(true);
+            // this needs to be handled better
+            response.setContentType("text/html");
+            std::ostream& ostr = response.send();
+            Poco::FileInputStream fis(path.toString());
+            ostr << fis.rdbuf();
+        } else {
+            response.setChunkedTransferEncoding(true);
+            response.setContentType("text/html");
+            response.setStatus("404");
+            std::ostream& ostr = response.send();
+            ostr << "404: File Not Found!";
+        }
     }
+private:
+    std::string staticHost;
 };
 
 class WebSocketHandler: public Poco::Net::HTTPRequestHandler
@@ -76,29 +72,64 @@ public:
 class MyRequestHandlerFactory: public Poco::Net::HTTPRequestHandlerFactory
 {
 public:
-    MyRequestHandlerFactory()
+    MyRequestHandlerFactory() : staticLocation("static"), baseDir("static")
     {
+    }
+
+    MyRequestHandlerFactory(std::string staticLoc)
+    {
+        staticLocation = staticLoc;
+        Poco::File staticDirectory(staticLoc);
     }
 
     Poco::Net::HTTPRequestHandler* createRequestHandler(const Poco::Net::HTTPServerRequest& request)
     {
         if(request.find("Upgrade") != request.end() && Poco::icompare(request["Upgrade"], "websocket") == 0)
             return new WebSocketHandler();
-        else
-            return new RootHandler();
+        else {
+            return new RootHandler(staticLocation);
+        }
+            
     }
+private:
+    Poco::File baseDir;
+    std::string staticLocation;
+};
+
+Poco::JSON::Object::Ptr readServerConfiguration(std::string filename) {
+    Poco::File config(filename);
+    if( config.exists() && config.canRead() && config.isFile() )
+    {
+        Poco::FileInputStream fis(filename);
+        std::stringstream ssr;
+        ssr << fis.rdbuf();
+        std::string config = ssr.str();
+        Poco::JSON::Parser parser;
+        Poco::Dynamic::Var result = parser.parse(config);
+        Poco::JSON::Object::Ptr object = result.extract<Poco::JSON::Object::Ptr>();
+        return object;
+    }
+    throw std::runtime_error("Configuration Not Found!");
 };
 
 int main(int argc, char** argv)
 {
-    Poco::UInt16 port = 9999;
+    Poco::JSON::Object::Ptr object = readServerConfiguration("config/startup.json");
+    Poco::UInt16 port;
+    int maxQueued;
+    int maxThreads;
+    object->get("port").convert(port);
+    object->get("max_queued").convert(maxQueued);
+    object->get("max_threads").convert(maxThreads);
+    std::string staticLocation = object->get("static_files").toString();
+
     Poco::Net::HTTPServerParams* params = new Poco::Net::HTTPServerParams();
-    params->setMaxQueued(100);
-    params->setMaxThreads(16);
+    params->setMaxQueued(maxQueued);
+    params->setMaxThreads(maxThreads);
 
     Poco::Net::ServerSocket svs(port);
 
-    Poco::Net::HTTPServer srv(new MyRequestHandlerFactory(), svs, params);
+    Poco::Net::HTTPServer srv(new MyRequestHandlerFactory(staticLocation), svs, params);
 
     srv.start();
 
