@@ -16,7 +16,11 @@
 #include "Poco/Path.h"
 #include "Poco/ExpireLRUCache.h"
 #include "Poco/Timestamp.h"
-
+#include "Poco/Net/SecureServerSocket.h"
+#include "Poco/Net/Context.h"
+#include "Poco/Util/ServerApplication.h"
+#include "Poco/Util/Application.h"
+#include "Poco/Exception.h"
 #include <exception>
 #include <sstream>
 #include <iostream>
@@ -118,6 +122,7 @@ public:
 
     Poco::Net::HTTPRequestHandler* createRequestHandler(const Poco::Net::HTTPServerRequest& request)
     {
+        std::cout << "request came in!" << std::endl;
         if(request.find("Upgrade") != request.end() && Poco::icompare(request["Upgrade"], "websocket") == 0)
             return new WebSocketHandler();
         else {
@@ -171,16 +176,28 @@ int main(int argc, char** argv)
     cSetup.size = maxCacheLength;
     cSetup.time = maxCacheTime;
     
+    Poco::Net::initializeSSL();
+    Poco::Net::SocketAddress socketAddr("127.0.0.1", 8080);
+    Poco::Net::Context::Ptr context = new Poco::Net::Context(Poco::Net::Context::SERVER_USE, "cert.pem");
+    std::cout << context.isNull() << std::endl;
 
-    Poco::Net::ServerSocket svs(port);
+    //Todo: implement as ServerApplication so we can use the SSLManager
+    try {
+    Poco::Net::SecureServerSocket svs(port);
+    } catch(Poco::Exception e) {
+        std::cout << e.name() << e.message() << std::endl;
+        //std::cout << svs.available() << std::endl;
+    }
+    
 
-    Poco::Net::HTTPServer srv(new MyRequestHandlerFactory(staticLocation, defaultRoot), svs, params);
+    //Poco::Net::HTTPServer srv(new MyRequestHandlerFactory(staticLocation, defaultRoot), svs, params);
 
-    srv.start();
+    //srv.start();
 
-    for(;;) {}
+    for(;;){};
 
-    srv.stop();
+    //srv.stop();
+    Poco::Net::uninitializeSSL();
 
     return 0;
 }
